@@ -3,6 +3,7 @@ from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
 import inspect
+import logging
 import warnings
 from functools import partial
 from uuid import uuid4
@@ -24,6 +25,7 @@ except ImportError:  # noqa
 dumps = partial(pickle.dumps, protocol=pickle.HIGHEST_PROTOCOL)
 loads = pickle.loads
 
+logger = logging.getLogger(__name__)
 
 JobStatus = enum(
     'JobStatus',
@@ -89,7 +91,8 @@ class Job(object):
     @classmethod
     def create(cls, func, args=None, kwargs=None, connection=None,
                result_ttl=None, ttl=None, status=None, description=None,
-               depends_on=None, timeout=None, id=None, origin=None):
+               depends_on=None, timeout=None, id=None, origin=None,
+               handler=None):
         """Creates a new Job instance for the given function, arguments, and
         keyword arguments.
         """
@@ -133,6 +136,7 @@ class Job(object):
         job.ttl = ttl
         job.timeout = timeout
         job._status = status
+        job.handler = handler
 
         # dependency could be job instance or id
         if depends_on is not None:
@@ -315,6 +319,7 @@ class Job(object):
         self._status = None
         self._dependency_id = None
         self.meta = {}
+        self.handler = None
 
     def __repr__(self):  # noqa
         return 'Job(%r, enqueued_at=%r)' % (self._id, self.enqueued_at)
@@ -457,6 +462,7 @@ class Job(object):
 
         connection.hmset(key, self.to_dict())
         self.cleanup(self.ttl)
+        self.handle_has_performed()
 
     def cancel(self):
         """Cancels the given job, which will prevent the job from ever being
@@ -486,6 +492,7 @@ class Job(object):
     def perform(self):  # noqa
         """Invokes the job function with the job arguments."""
         _job_stack.push(self.id)
+        self.handle_will_perform()
         try:
             self._result = self.func(*self.args, **self.kwargs)
         finally:
@@ -554,6 +561,22 @@ class Job(object):
 
         connection = pipeline if pipeline is not None else self.connection
         connection.sadd(Job.dependents_key_for(self._dependency_id), self.id)
+
+    def call_handler(self, phase_name, *args):
+        if self.handler and hasattr(self.handler, phase_name):
+            try:
+                getattr(self.handler, phase_name)(self, *args)
+            except:
+                logger.exception("Failed to handle %s phase" % phase_name)
+
+    def handle_will_perform(self):
+        self.call_handler('will_perform')
+
+    def handle_has_performed(self):
+        self.call_handler('has_performed')
+
+    def handle_failed(self, *exec_info):
+        self.call_handler('has_failed', *exec_info)
 
     def __str__(self):
         return '<Job %s: %s>' % (self.id, self.description)

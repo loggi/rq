@@ -561,12 +561,13 @@ class Worker(object):
                 started_job_registry.remove(job, pipeline=pipeline)
 
                 pipeline.execute()
-
             except Exception:
                 job.set_status(JobStatus.FAILED, pipeline=pipeline)
                 started_job_registry.remove(job, pipeline=pipeline)
                 pipeline.execute()
-                self.handle_exception(job, *sys.exc_info())
+                exec_info = sys.exc_info()
+                job.handle_failed(job, *exec_info)
+                self.handle_exception(job, *exec_info)
                 return False
 
         if rv is None:
